@@ -1,0 +1,15 @@
+{
+  "name": "estacion-uthh",
+  "version": "1.0.0",
+  "description": "Estacion meteorologica UTHH: aplicacion web sobre Apache Cassandra",
+  "main": "servidor.js",
+  "private": true,
+  "scripts": {
+    "servidor": "node servidor.js",
+    "simulador": "node simulador.js",
+    "historico": "node carga-historica.js"
+  },
+  "dependencies": {
+    "cassandra-driver": "^4.7.2"
+  }
+}
