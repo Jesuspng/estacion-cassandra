@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Almacen · Estacion UTHH</title>
+<link rel="stylesheet" href="estilos.css">
+<style>
+  .botones { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
+  .botones label { flex: 1 1 220px; }
+  .secundario { background: var(--fondo); color: var(--azul);
+    border: 1px solid var(--azul); }
+  .fila { display: grid; gap: 6px; padding: 8px 0;
+    border-top: 1px solid var(--linea); }
+  .celdas { display: flex; gap: 6px; flex-wrap: wrap; }
+  .celda { display: inline-flex; border: 1px solid var(--linea);
+    border-radius: 8px; overflow: hidden; font-size: .85rem; }
+  .celda b { background: var(--azul2); color: var(--azul);
+    padding: 2px 8px; font-weight: 700; }
+  .celda span { padding: 2px 8px; }
+  .celda.borrada { border-color: var(--rojo); }
+  .celda.borrada b { background: var(--rojo2); color: var(--rojo); }
+  .chip.borrada { background: var(--rojo2); color: var(--rojo); }
+  .llave { font-family: ui-monospace, Consolas, monospace;
+    font-size: .85rem; overflow-wrap: anywhere; }
+  .elegido { background: var(--azul2); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Asi guarda Cassandra los datos</h1>
+  <p class="nota">
+    Cassandra escribe primero en memoria (<b>memtable</b>).
+    Con <b>Flush</b> la pasa a disco como un archivo <b>SSTable</b>
+    que ya nunca se modifica. Un UPDATE no cambia ese archivo:
+    escribe celdas nuevas en otro. <b>Compactar</b> junta los archivos
+    y se queda con la celda mas reciente de cada columna.
+  </p>
+
+  <section class="tarjeta">
+    <p>
+      <span class="chip">PARTICION</span> partition key →
+      <span class="chip">FILA</span> ordenada por clustering →
+      <b>celdas</b>: columna = valor (con su hora de escritura)
+    </p>
+  </section>
+
+  <form class="tarjeta botones" id="form">
+    <label>Tabla <select id="tabla"></select></label>
+    <button type="button" id="flush">Flush (memoria → disco)</button>
+    <button type="button" id="compact" class="secundario">
+      Compactar archivos
+    </button>
+  </form>
+  <div id="aviso"></div>
+
+  <section class="tarjeta">
+    <h2>Archivos SSTable de la tabla</h2>
+    <div class="tabla">
+      <table>
+        <thead>
+          <tr><th>Archivo</th><th>Tamano</th><th>Creado</th><th></th></tr>
+        </thead>
+        <tbody id="archivos"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <h2 id="resumen"></h2>
+  <div id="particiones" style="display:grid; gap:12px"></div>
+  <div id="comandos"></div>
+</main>
+
+<script src="app.js"></script>
+<script>
+menu("almacen.html");
+
+const $tabla = document.getElementById("tabla");
+const $aviso = document.getElementById("aviso");
+
+// Nombres de las columnas de la llave de cada tabla
+// (sstabledump solo da los valores, no los nombres)
+const LLAVES = {
+  sensores: { particion: ["id"], clustering: [] },
+  lecturas_por_sensor_dia: {
+    particion: ["sensor", "dia"], clustering: ["hora"] },
+  ultima_lectura: { particion: ["sensor"], clustering: [] },
+  alertas_por_dia: {
+    particion: ["dia"], clustering: ["hora", "sensor"] },
+  conteo_por_dia: { particion: ["sensor"], clustering: ["dia"] },
+};
+
+for (const t of Object.keys(LLAVES)) {
+  const o = el("option", null, t);
+  $tabla.append(o);
+}
+
+// "sensor = uthh-01 · dia = 2026-10-19"
+function llave(nombres, valores) {
+  return (valores || []).map((v, i) => (nombres[i] || "?") + " = " + v)
+    .join(" · ");
+}
+
+// Hora local de una marca de tiempo de Cassandra
+function hora(ts) {
+  const d = new Date(ts);
+  return isNaN(d) ? ts : d.toLocaleTimeString("es-MX");
+}
+
+// Una celda: columna = valor
+function celda(c, tsFila) {
+  const caja = el("span", "celda");
+  caja.append(el("b", null, c.name));
+  if (c.deletion_info) {
+    caja.classList.add("borrada");
+    caja.append(el("span", null, "BORRADA (tombstone)"));
+  } else {
+    caja.append(el("span", null, JSON.stringify(c.value)));
+  }
+  // Si la celda tiene su propia hora, es porque se escribio aparte
+  const ts = c.tstamp || tsFila;
+  let titulo = ts ? "Escrita " + hora(ts) : "";
+  if (c.ttl) titulo += " · TTL " + c.ttl + " s";
+  caja.title = titulo;
+  if (c.tstamp && c.tstamp !== tsFila) {
+    caja.append(el("span", "nota", hora(c.tstamp)));
+  }
+  return caja;
+}
+
+// Una fila de la particion
+function fila(f, nombresClustering) {
+  const div = el("div", "fila");
+  if (f.type !== "row") {
+    // Por ejemplo un rango borrado (range tombstone)
+    div.append(el("span", "chip borrada", f.type));
+    div.append(el("pre", null, JSON.stringify(f, null, 1)));
+    return div;
+  }
+  const tsFila = f.liveness_info && f.liveness_info.tstamp;
+  let titulo = f.clustering
+    ? llave(nombresClustering, f.clustering)
+    : "Fila unica (la tabla no tiene clustering)";
+  if (tsFila) titulo += " · escrita " + hora(tsFila);
+  if (!tsFila) titulo += " · solo celdas sueltas (UPDATE)";
+  div.append(el("span", "llave", titulo));
+  if (f.deletion_info) {
+    div.append(el("span", "chip borrada", "Fila borrada (tombstone)"));
+  }
+  const celdas = el("div", "celdas");
+  for (const c of f.cells || []) celdas.append(celda(c, tsFila));
+  div.append(celdas);
+  return div;
+}
+
+// Una particion completa
+function particion(p, llaves) {
+  const t = el("section", "tarjeta");
+  const cab = el("p");
+  cab.append(el("span", "chip", "PARTICION"), " ");
+  cab.append(el("span", "llave", llave(llaves.particion, p.partition.key)));
+  t.append(cab);
+  if (p.partition.deletion_info) {
+    t.append(el("span", "chip borrada", "Particion borrada (tombstone)"));
+  }
+  const mostradas = (p.rows || []).length;
+  let nota = p.totalFilas + (p.totalFilas === 1 ? " fila" : " filas");
+  if (mostradas < p.totalFilas) nota += " (se muestran " + mostradas + ")";
+  t.append(el("p", "nota", nota));
+  for (const f of p.rows || []) t.append(fila(f, llaves.clustering));
+  return t;
+}
+
+// Abre un archivo y dibuja sus particiones
+async function abrir(archivo, boton) {
+  const $p = document.getElementById("particiones");
+  const $r = document.getElementById("resumen");
+  document.querySelectorAll("#archivos tr")
+    .forEach(tr => tr.classList.remove("elegido"));
+  if (boton) boton.closest("tr").classList.add("elegido");
+  $r.textContent = "Abriendo con sstabledump...";
+  $p.textContent = "";
+  try {
+    const ruta = "/almacen/abrir?tabla=" + $tabla.value
+      + "&archivo=" + encodeURIComponent(archivo);
+    const r = await api(ruta);
+    const tot = r.totales;
+    $r.textContent = "Dentro de " + archivo.split("/").pop() + ": "
+      + tot.particiones + " particiones · " + tot.filas + " filas · "
+      + tot.celdas + " celdas";
+    const llaves = LLAVES[$tabla.value];
+    for (const p of r.muestra) $p.append(particion(p, llaves));
+    if (tot.particiones > r.muestra.length) {
+      $p.append(el("p", "nota", "Se muestran las primeras "
+        + r.muestra.length + " particiones."));
+    }
+    const crudo = el("details");
+    crudo.append(el("summary", null, "JSON de la primera particion"));
+    crudo.append(el("pre", null, JSON.stringify(r.muestra[0], null, 2)));
+    $p.append(crudo);
+    verComandos(r.comandos);
+  } catch (e) {
+    $r.textContent = "";
+    aviso($aviso, e.message, "error");
+  }
+}
+
+// Lista los archivos y abre el mas nuevo
+function pintarArchivos(r) {
+  const tb = document.getElementById("archivos");
+  tb.textContent = "";
+  document.getElementById("particiones").textContent = "";
+  document.getElementById("resumen").textContent = "";
+  if (!r.archivos.length) {
+    tb.innerHTML = '<tr><td colspan="4" class="nota">Sin archivos: '
+      + "los datos siguen en memoria. Presiona Flush.</td></tr>";
+  }
+  for (const a of r.archivos) {
+    const tr = el("tr");
+    const boton = el("button", "secundario", "Ver");
+    boton.type = "button";
+    boton.addEventListener("click", () => abrir(a.ruta, boton));
+    const celdaBoton = el("td");
+    celdaBoton.append(boton);
+    tr.append(el("td", "llave", a.nombre));
+    tr.append(el("td", null, (a.bytes / 1024).toFixed(1) + " KB"));
+    tr.append(el("td", null, hora(a.fecha)));
+    tr.append(celdaBoton);
+    tb.append(tr);
+  }
+  verComandos(r.comandos);
+  if (r.archivos.length) {
+    abrir(r.archivos[0].ruta, tb.querySelector("button"));
+  }
+}
+
+function verComandos(lista) {
+  const c = document.getElementById("comandos");
+  c.textContent = "";
+  const d = el("details");
+  d.append(el("summary", null, "Comandos que ejecuto el servidor"));
+  d.append(el("pre", null, lista.join("\n")));
+  c.append(d);
+}
+
+async function cargar() {
+  aviso($aviso, "");
+  try {
+    pintarArchivos(await api("/almacen/archivos?tabla=" + $tabla.value));
+  } catch (e) {
+    aviso($aviso, e.message, "error");
+  }
+}
+
+// Flush o compact: los ejecuta nodetool dentro del contenedor
+async function accion(nombre, boton) {
+  boton.disabled = true;
+  aviso($aviso, "Ejecutando nodetool " + nombre + "...");
+  try {
+    const r = await api("/almacen/" + nombre, "POST",
+      { tabla: $tabla.value });
+    aviso($aviso, "Listo: nodetool " + nombre + " "
+      + "termino. Ahora hay " + r.archivos.length + " archivo(s).");
+    pintarArchivos(r);
+  } catch (e) {
+    aviso($aviso, e.message, "error");
+  }
+  boton.disabled = false;
+}
+
+const $flush = document.getElementById("flush");
+const $compact = document.getElementById("compact");
+$flush.addEventListener("click", () => accion("flush", $flush));
+$compact.addEventListener("click", () => accion("compact", $compact));
+$tabla.addEventListener("change", cargar);
+
+cargar();
+</script>
+</body>
+</html>
