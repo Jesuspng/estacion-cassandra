@@ -52,7 +52,7 @@ function verCql(contenedor, lineas) {
 function menu(actual) {
   const nav = el("nav");
   nav.append(el("b", null, "Estacion UTHH"));
-  for (const [pagina, texto] of [["index.html", "Tablero"], ["sensor.html", "Sensor"], ["registrar.html", "Registrar"]]) {
+  for (const [pagina, texto] of [["index.html", "Tablero"], ["sensor.html", "Sensor"], ["registrar.html", "Registrar"], ["almacen.html", "Almacen"]]) {
     const a = el("a", null, texto); a.href = pagina;
     if (pagina === actual) a.setAttribute("aria-current", "page");
     nav.append(a);

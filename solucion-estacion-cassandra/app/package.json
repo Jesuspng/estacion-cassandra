@@ -10,6 +10,10 @@
     "historico": "node carga-historica.js"
   },
   "dependencies": {
-    "cassandra-driver": "^4.7.2"
-  }
+    "cassandra-driver": "^4.10.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
 }

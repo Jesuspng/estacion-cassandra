@@ -5,6 +5,7 @@ const http = require("http");                         // servidor web incluido e
 const fs = require("fs");                             // para leer los archivos de web/
 const path = require("path");
 const { KS, LocalDate, crearCliente, diaLocal, ejecutar, guardarLectura, leerSensores } = require("./bd");
+const almacen = require("./almacen");
 
 const PUERTO = 3000;
 const WEB = path.join(__dirname, "web");
@@ -99,6 +100,7 @@ http.createServer(async (req, res) => {
     else if (req.method === "GET" && ruta === "/api/sensores") respuesta = await sensores();
     else if (req.method === "GET" && (m = ruta.match(/^\/api\/sensores\/([\w-]+)\/lecturas$/))) respuesta = await lecturas(m[1], url.searchParams);
     else if (req.method === "GET" && ruta === "/api/alertas") respuesta = await alertas(url.searchParams);
+    else if (ruta.startsWith("/api/almacen/")) respuesta = await almacen.ruta(req, ruta, url.searchParams);
     else if (req.method === "POST" && ruta === "/api/lecturas") {
       let cuerpo = "";
       for await (const parte of req) cuerpo += parte;   // lee el JSON que envio la pagina
